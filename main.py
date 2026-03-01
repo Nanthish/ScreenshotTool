@@ -450,8 +450,9 @@ class ScreenshotTool:
                             else:
                                 # Time's up - hide countdown window and capture
                                 countdown_window.withdraw()
-                                countdown_window.update()
-                                time.sleep(0.1)
+                                countdown_window.update_idletasks()
+                                self.root.update_idletasks()
+                                time.sleep(0.3)  # Increased delay for reliability
                                 perform_capture()
                         
                         def perform_capture():
@@ -646,7 +647,7 @@ class ScreenshotTool:
     def get_comment(self):
         """Get a comment from the user for the screenshot"""
         comment = simpledialog.askstring("Add Comment", 
-                                       "Enter a comment for this screenshot (optional):",
+                                       "Enter a comment for this screenshot:",
                                        parent=self.root)
         return comment if comment is not None else ""
         
@@ -946,7 +947,7 @@ class ScreenshotTool:
     def get_comment(self):
         """Get a comment from the user for the screenshot"""
         comment = simpledialog.askstring("Add comment for the screenshot", 
-                                       "Enter a comment for this screenshot (optional):",
+                                       "Enter a comment for this screenshot:",
                                        parent=self.root)
         return comment if comment is not None else ""
     
