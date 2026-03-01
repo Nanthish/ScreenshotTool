@@ -57,6 +57,67 @@ class ScreenshotTool:
         self.setup_ui()
         self.center_window()
         
+        # Register global hotkeys (like Windows Snipping Tool)
+        self.register_hotkeys()
+        
+    def register_hotkeys(self):
+        """Register global hotkeys using Windows GetAsyncKeyState API"""
+        try:
+            # Virtual key codes
+            VK_CONTROL = 0x11
+            VK_MENU = 0x12  # Alt key
+            VK_F = 0x46
+            VK_P = 0x50
+            
+            # Function to check if key is pressed
+            def is_key_pressed(vk):
+                """Check if a virtual key is currently pressed"""
+                return ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000
+            
+            def hotkey_listener():
+                """Background thread that listens for hotkey presses"""
+                last_f_pressed = False
+                last_p_pressed = False
+                
+                while True:
+                    try:
+                        ctrl = is_key_pressed(VK_CONTROL)
+                        alt = is_key_pressed(VK_MENU)
+                        f_pressed = is_key_pressed(VK_F)
+                        p_pressed = is_key_pressed(VK_P)
+                        
+                        # Ctrl+Alt+F
+                        if ctrl and alt and f_pressed and not last_f_pressed:
+                            print("✓ Ctrl+Alt+F detected - Taking screenshot...")
+                            self.root.after(0, self.take_screenshot)
+                            last_f_pressed = True
+                        elif not f_pressed:
+                            last_f_pressed = False
+                        
+                        # Ctrl+Alt+P
+                        if ctrl and alt and p_pressed and not last_p_pressed:
+                            print("✓ Ctrl+Alt+P detected - Starting partial capture...")
+                            self.root.after(0, self.partial_capture)
+                            last_p_pressed = True
+                        elif not p_pressed:
+                            last_p_pressed = False
+                        
+                        time.sleep(0.05)  # Poll every 50ms
+                    except Exception as e:
+                        print(f"Error in hotkey listener: {e}")
+                        time.sleep(0.5)
+            
+            # Start listener thread
+            listener_thread = threading.Thread(target=hotkey_listener, daemon=False)
+            listener_thread.daemon = True
+            listener_thread.start()
+            
+            print("✓ Global hotkeys ACTIVE: Ctrl+Alt+F (Full) and Ctrl+Alt+P (Partial)")
+            print("✓ Works even when SnipIT is minimized or unfocused!")
+            
+        except Exception as e:
+            print(f"✗ Failed to register hotkeys: {e}")
+        
     def create_button_icons(self):
         """Create icon images for buttons using PIL"""
         # Screenshot icon (camera icon - 40x40)
@@ -126,8 +187,8 @@ class ScreenshotTool:
         """Setup the floating UI with buttons"""
         self.create_button_icons()
         
-        # Main frame
-        main_frame = tk.Frame(self.root, bg="#f0f0f0", padx=1, pady=1)
+        # Main frame with thin black border
+        main_frame = tk.Frame(self.root, bg="#f0f0f0", padx=1, pady=1, relief=tk.SOLID, bd=1, highlightthickness=0, highlightbackground="black")
         main_frame.pack(fill=tk.BOTH, expand=True)
         
         # Bind drag to main frame
@@ -216,7 +277,7 @@ class ScreenshotTool:
         self.help_btn.pack(side=tk.RIGHT, padx=(0, 1))
         
     def partial_capture(self):
-        """Start fullscreen overlay for region selection"""
+        """Start fullscreen overlay for region selection - Windows Snipping Tool style"""
         if self.is_capturing:
             return
             
@@ -224,100 +285,286 @@ class ScreenshotTool:
         self.partial_screenshot_mode = True
         
         try:
-            # Hide the floating window
-            self.root.withdraw()
-            self.root.update()
-            time.sleep(0.1)
+            # Keep main window handle
+            main_hwnd = self.root.winfo_id()
             
-            # Create fullscreen semi-transparent overlay
+            # Create fullscreen overlay window
             self.selection_overlay = tk.Tk()
             self.selection_overlay.attributes("-fullscreen", True)
-            self.selection_overlay.attributes("-alpha", 0.1)
+            self.selection_overlay.attributes("-alpha", 0.3)  # Semi-transparent
             self.selection_overlay.attributes("-topmost", True)
-            self.selection_overlay.config(bg="gray")
+            self.selection_overlay.config(bg="gray20")
             
-            canvas = tk.Canvas(self.selection_overlay, bg="gray", cursor="crosshair", highlightthickness=0)
+            # Create canvas for drawing selection
+            canvas = tk.Canvas(self.selection_overlay, bg="gray20", cursor="crosshair", 
+                             highlightthickness=0, relief=tk.FLAT, bd=0)
             canvas.pack(fill=tk.BOTH, expand=True)
             
+            # Get overlay window handle
+            overlay_hwnd = self.selection_overlay.winfo_id()
+            
+            # Update window
+            self.selection_overlay.update()
+            
+            # Use Windows API to make overlay transparent to mouse clicks but still visible
+            HWND_TOPMOST = -1
+            SWP_NOSIZE = 0x0001
+            SWP_NOMOVE = 0x0002
+            WS_EX_LAYERED = 0x00080000
+            WS_EX_TRANSPARENT = 0x00000020
+            
+            # Set window position to topmost
+            ctypes.windll.user32.SetWindowPos(overlay_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE)
+            
+            # Small delay
+            time.sleep(0.05)
+
+            
+            # Selection state
             self.selection_data = {
-                "start_x": 0, "start_y": 0, 
-                "end_x": 0, "end_y": 0, 
+                "start_x": 0, "start_y": 0,
+                "end_x": 0, "end_y": 0,
                 "rect": None,
-                "start_time": time.time()
+                "selecting": False
             }
             
             def on_mouse_down(event):
-                self.selection_data["start_x"] = event.x
-                self.selection_data["start_y"] = event.y
-                if self.selection_data["rect"]:
-                    canvas.delete(self.selection_data["rect"])
-            
-            def on_mouse_drag(event):
-                self.selection_data["end_x"] = event.x
-                self.selection_data["end_y"] = event.y
-                if self.selection_data["rect"]:
-                    canvas.delete(self.selection_data["rect"])
-                # Draw light grey selection rectangle with 3px width
-                self.selection_data["rect"] = canvas.create_rectangle(
-                    self.selection_data["start_x"], self.selection_data["start_y"],
-                    self.selection_data["end_x"], self.selection_data["end_y"],
-                    outline="#C0C0C0", width=3, stipple="gray50"
-                )
-            
-            def on_mouse_up(event):
-                # Validate minimum selection size (10x10)
-                width = abs(self.selection_data["end_x"] - self.selection_data["start_x"])
-                height = abs(self.selection_data["end_y"] - self.selection_data["start_y"])
+                """Handle mouse button down"""
+                self.selection_data["start_x"] = event.x_root
+                self.selection_data["start_y"] = event.y_root
+                self.selection_data["end_x"] = event.x_root
+                self.selection_data["end_y"] = event.y_root
+                self.selection_data["selecting"] = True
+                print(f"✓ Mouse down at ({event.x_root}, {event.y_root})")
                 
-                if width < 10 or height < 10:
-                    self.selection_overlay.destroy()
-                    self.root.deiconify()
-                    self.is_capturing = False
-                    self.partial_screenshot_mode = False
-                    messagebox.showwarning("Invalid Selection", "Selection must be at least 10x10 pixels.")
+                # Clear any previous rectangle
+                if self.selection_data["rect"]:
+                    canvas.delete(self.selection_data["rect"])
+                    self.selection_data["rect"] = None
+            
+            def on_mouse_move(event):
+                """Handle mouse motion while dragging"""
+                if not self.selection_data["selecting"]:
                     return
                 
-                self.selection_overlay.destroy()
+                self.selection_data["end_x"] = event.x_root
+                self.selection_data["end_y"] = event.y_root
                 
-                # Capture the selected region
+                # Delete previous rectangle
+                if self.selection_data["rect"]:
+                    canvas.delete(self.selection_data["rect"])
+                
+                # Draw new selection rectangle
                 x1 = min(self.selection_data["start_x"], self.selection_data["end_x"])
                 y1 = min(self.selection_data["start_y"], self.selection_data["end_y"])
                 x2 = max(self.selection_data["start_x"], self.selection_data["end_x"])
                 y2 = max(self.selection_data["start_y"], self.selection_data["end_y"])
                 
-                self.current_partial_image = ImageGrab.grab(bbox=(x1, y1, x2, y2))
+                # Draw rectangle in canvas coordinates
+                canvas_x1 = x1 - self.selection_overlay.winfo_x()
+                canvas_y1 = y1 - self.selection_overlay.winfo_y()
+                canvas_x2 = x2 - self.selection_overlay.winfo_x()
+                canvas_y2 = y2 - self.selection_overlay.winfo_y()
                 
-                # Open markup window directly
-                self.open_markup_window(self.current_partial_image)
+                self.selection_data["rect"] = canvas.create_rectangle(
+                    canvas_x1, canvas_y1, canvas_x2, canvas_y2,
+                    outline="white", width=2, fill="blue"
+                )
                 
-                self.root.deiconify()
+                # Draw corner handles
+                handle_size = 5
+                for hx, hy in [(canvas_x1, canvas_y1), (canvas_x2, canvas_y1), 
+                               (canvas_x1, canvas_y2), (canvas_x2, canvas_y2)]:
+                    canvas.create_rectangle(
+                        hx - handle_size, hy - handle_size,
+                        hx + handle_size, hy + handle_size,
+                        fill="white", outline="white"
+                    )
+            
+            def on_mouse_up(event):
+                """Handle mouse button release"""
+                if not self.selection_data["selecting"]:
+                    return
+                
+                self.selection_data["selecting"] = False
+                self.selection_data["end_x"] = event.x_root
+                self.selection_data["end_y"] = event.y_root
+                
+                # Validate selection size
+                width = abs(self.selection_data["end_x"] - self.selection_data["start_x"])
+                height = abs(self.selection_data["end_y"] - self.selection_data["start_y"])
+                
+                print(f"✓ Mouse released at ({event.x_root}, {event.y_root})")
+                print(f"✓ Selection size: {width}x{height}")
+                
+                if width >= 10 and height >= 10:
+                    # Valid selection - show countdown dialog for dropdown preparation
+                    try:
+                        print("✓ Destroying overlay...")
+                        self.selection_overlay.destroy()
+                        self.selection_overlay = None
+                        
+                        # Store selection coordinates
+                        x1 = min(self.selection_data["start_x"], self.selection_data["end_x"])
+                        y1 = min(self.selection_data["start_y"], self.selection_data["end_y"])
+                        x2 = max(self.selection_data["start_x"], self.selection_data["end_x"])
+                        y2 = max(self.selection_data["start_y"], self.selection_data["end_y"])
+                        
+                        print(f"✓ Selection bbox: ({x1}, {y1}, {x2}, {y2})")
+                        
+                        # Create a countdown window for dropdown preparation
+                        countdown_window = tk.Toplevel(self.root)
+                        countdown_window.attributes("-topmost", True)
+                        countdown_window.title("Prepare Screenshot")
+                        countdown_window.geometry("300x150")
+                        countdown_window.resizable(False, False)
+                        
+                        # Center the countdown window
+                        countdown_window.update_idletasks()
+                        x = countdown_window.winfo_screenwidth() // 2 - 150
+                        y = countdown_window.winfo_screenheight() // 2 - 75
+                        countdown_window.geometry(f"300x150+{x}+{y}")
+                        
+                        # Label
+                        label = tk.Label(countdown_window, text="Prepare capturing contents!\nGet your dropdown/menu ready.",
+                                        font=("Arial", 10), fg="#333333")
+                        label.pack(pady=10)
+                        
+                        # Countdown label
+                        countdown_label = tk.Label(countdown_window, text="5", 
+                                                  font=("Arial", 48, "bold"), fg="#2196F3")
+                        countdown_label.pack(pady=10)
+                        
+                        # Instructions
+                        instructions = tk.Label(countdown_window, text="Capturing in 5 seconds...",
+                                              font=("Arial", 9), fg="#666666")
+                        instructions.pack(pady=5)
+                        
+                        countdown_value = [5]
+                        
+                        def countdown():
+                            countdown_value[0] -= 1
+                            if countdown_value[0] > 0:
+                                countdown_label.config(text=str(countdown_value[0]))
+                                countdown_window.after(1000, countdown)
+                            else:
+                                # Time's up - hide countdown window and capture
+                                countdown_window.withdraw()
+                                countdown_window.update()
+                                time.sleep(0.1)
+                                perform_capture()
+                        
+                        def perform_capture():
+                            """Perform the actual screenshot capture"""
+                            try:
+                                # Hide overlay and main window before capturing
+                                if self.selection_overlay:
+                                    self.selection_overlay.withdraw()
+                                
+                                self.root.withdraw()
+                                self.root.update()
+                                time.sleep(0.1)
+                                
+                                print(f"✓ Capturing bbox: ({x1}, {y1}, {x2}, {y2})")
+                                self.current_partial_image = ImageGrab.grab(bbox=(x1, y1, x2, y2))
+                                print(f"✓ Image captured: {self.current_partial_image.size}")
+                                
+                                # Show main window
+                                self.root.deiconify()
+                                
+                                # Destroy overlay completely
+                                try:
+                                    if self.selection_overlay:
+                                        self.selection_overlay.destroy()
+                                        self.selection_overlay = None
+                                except:
+                                    pass
+                                
+                                # Open markup window
+                                self.open_markup_window(self.current_partial_image)
+                                print("✓ Markup window opened")
+                                
+                                self.is_capturing = False
+                                self.partial_screenshot_mode = False
+                            except Exception as e:
+                                print(f"✗ Error in capture: {e}")
+                                import traceback
+                                traceback.print_exc()
+                                self.root.deiconify()
+                                self.is_capturing = False
+                                self.partial_screenshot_mode = False
+                        
+                        # Start countdown
+                        countdown_window.after(1000, countdown)
+                        
+                    except Exception as e:
+                        print(f"✗ Error in capture: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        self.is_capturing = False
+                        self.partial_screenshot_mode = False
+                    
+                else:
+                    # Selection too small - show message but allow retry
+                    print(f"✗ Selection too small: {width}x{height}")
+                    # Restore main window before showing warning
+                    try:
+                        self.selection_overlay.destroy()
+                        self.selection_overlay = None
+                    except:
+                        pass
+                    # Restore main window visibility
+                    self.root.deiconify()
+                    messagebox.showwarning(
+                        "Invalid Selection", 
+                        "Selection must be at least 10x10 pixels.\nTry again."
+                    )
+                    # Hide again for retry
+                    self.root.withdraw()
             
             def on_key_press(event):
+                """Handle key presses"""
                 if event.keysym == "Escape":
-                    self.selection_overlay.destroy()
+                    print("✓ Escape pressed - canceling")
+                    try:
+                        self.selection_overlay.destroy()
+                        self.selection_overlay = None
+                    except:
+                        pass
+                    # Restore main window
                     self.root.deiconify()
                     self.is_capturing = False
                     self.partial_screenshot_mode = False
-                elif event.keysym == "d" or event.keysym == "D":
-                    # Smart dropdown capture with focus detection
-                    self.selection_overlay.destroy()
-                    self.smart_dropdown_capture()
-                    self.root.deiconify()
             
+            # Bind mouse events to both canvas and overlay window
             canvas.bind("<Button-1>", on_mouse_down)
-            canvas.bind("<B1-Motion>", on_mouse_drag)
+            canvas.bind("<B1-Motion>", on_mouse_move)
             canvas.bind("<ButtonRelease-1>", on_mouse_up)
-            canvas.bind("<Escape>", on_key_press)
-            canvas.bind("<d>", on_key_press)
-            canvas.bind("<D>", on_key_press)
+            canvas.bind("<KeyPress>", on_key_press)
+            
+            self.selection_overlay.bind("<Button-1>", on_mouse_down)
+            self.selection_overlay.bind("<B1-Motion>", on_mouse_move)
+            self.selection_overlay.bind("<ButtonRelease-1>", on_mouse_up)
+            self.selection_overlay.bind("<KeyPress>", on_key_press)
+            
+            # Give focus to both
+            self.selection_overlay.focus_set()
             canvas.focus_set()
             
+            # Update to ensure window is fully rendered
+            self.selection_overlay.update()
+            
+            print("✓ Partial capture started")
+            print("✓ Drag to select region with crosshair cursor")
+            print("✓ Press Escape to cancel")
+            
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to start partial capture: {str(e)}")
-            self.root.deiconify()
-        finally:
+            print(f"✗ Error in partial_capture: {e}")
+            import traceback
+            traceback.print_exc()
             self.is_capturing = False
             self.partial_screenshot_mode = False
+            messagebox.showerror("Error", f"Failed to start partial capture: {str(e)}")
         
     def center_window(self):
         """Position the floating window 45 pixels away from both corners"""
@@ -359,7 +606,7 @@ class ScreenshotTool:
         self.is_capturing = True
         
         try:
-            # Hide the floating window temporarily
+            # Hide the floating window
             self.root.withdraw()
             
             # Small delay to ensure window is hidden
@@ -387,8 +634,11 @@ class ScreenshotTool:
                 'comment': comment,
                 'timestamp': timestamp
             })
+            
+            print("✓ Full screenshot captured")
                 
         except Exception as e:
+            self.root.deiconify()
             messagebox.showerror("Error", f"Failed to take screenshot: {str(e)}")
         finally:
             self.is_capturing = False
@@ -638,6 +888,16 @@ class ScreenshotTool:
         tk.Button(control_frame, text="Save", command=lambda: self.save_markup(markup_window, image, drawing_data),
                  bg="#4CAF50", fg="white", font=("Arial", 8)).pack(side=tk.LEFT, padx=5)
         
+        # Clear button - clear all markups
+        def clear_markups():
+            drawing_data["markups"] = []
+            # Redraw canvas with original image
+            canvas.delete("all")
+            canvas.create_image(0, 0, image=canvas.photo, anchor="nw")
+        
+        tk.Button(control_frame, text="Clear", command=clear_markups,
+                 bg="#FF9800", fg="white", font=("Arial", 8)).pack(side=tk.LEFT, padx=2)
+        
     def save_markup(self, window, original_image, drawing_data):
         """Save the marked up screenshot"""
         window.destroy()
@@ -694,6 +954,14 @@ class ScreenshotTool:
         """Show help information dialog"""
         help_text = """SnipIT v2.0 - Support & Contact
 
+KEYBOARD SHORTCUTS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Ctrl+Alt+F  - Full Screen Capture
+Ctrl+Alt+P  - Partial Capture (with selection)
+
+Perfect for capturing expanded dropdowns without
+losing focus to the web application!
+
 For Support and Queries please reach out to:
 
 Work Email:
@@ -734,7 +1002,7 @@ nanthishwaran579@gmail.com
                 
                 # Add comment only if it exists (no blank comment section)
                 if shot["comment"]:
-                    doc.add_paragraph(f"Comment: {shot['comment']}")
+                    doc.add_paragraph(shot["comment"])
                 
                 # Save image to temporary file and add to document
                 temp_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
